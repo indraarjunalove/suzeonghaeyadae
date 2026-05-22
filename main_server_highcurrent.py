@@ -34,34 +34,6 @@ from datetime import datetime
 import joblib
 import pandas as pd
 
-# UART 통신용 (실제 모드에서만 사용, 시뮬 모드에서는 import 실패해도 OK)
-try:
-    import serial
-    SERIAL_AVAILABLE = True
-except ImportError:
-    SERIAL_AVAILABLE = False
-    print("[WARN] pyserial 미설치 - 시뮬 모드 전용 (실제 모드 시 'pip install pyserial' 필요)")
-
-# ============================================================
-# UART 설정 (실제 하드웨어 연결 시 수정)
-# ============================================================
-UART_PORT = '/dev/ttyUSB0'   # 라즈베리파이에 ESP32가 USB로 연결된 경우
-                              # 또는 '/dev/ttyACM0' (ESP32 native USB)
-                              # GPIO UART면 '/dev/serial0'
-UART_BAUDRATE = 115200        # ESP32 표준 baud rate
-UART_TIMEOUT = 0.5            # 수신 타임아웃 (초)
-
-# ============================================================
-# [1번 대응] 실측 데이터 자동 로깅
-# ============================================================
-# is_real_mode=True 일 때만 활성화 (시뮬 데이터는 안 쌓음)
-# 매 tick의 입력+AI출력+결과(다음 tick 측정값)을 CSV로 저장
-# 추후 train_system.py로 재학습 가능
-LOGGING_ENABLED = True              # 로깅 on/off
-LOG_DIR = 'logs'                    # 로그 폴더
-LOG_FILE_PREFIX = 'real_data'       # 파일명 prefix
-LOG_ROTATE_HOURS = 24               # N시간마다 새 파일
-
 # ============================================================
 # 설정
 # ============================================================
@@ -361,141 +333,6 @@ sim_state = {
 }
 
 # ============================================================
-# [1번 대응] 실측 데이터 로깅 시스템
-# ============================================================
-# 매 tick 데이터를 CSV로 저장 → 실측 데이터 축적 → 재학습
-# 헤더: 시간 + 입력(V/MT/BT) + AI출력(mode/DAC/PWM) + 결과지표(다음 tick ΔV 변화량)
-LOG_HEADER = [
-    'timestamp', 'tick',
-    # 입력 (현재 상태)
-    'v1', 'v2', 'v3', 'v4',
-    'mt1', 'mt2', 'mt3', 'mt4',
-    'bt1', 'bt2', 'bt3', 'bt4',
-    'pack_delta_v',
-    # AI 출력 (현재 결정)
-    'ai_mode', 'p_dac',
-    'dac1', 'dac2', 'dac3', 'dac4',
-    'pwm1', 'pwm2', 'pwm3', 'pwm4',
-    # 결과 (직전 tick 대비 ΔV 변화 — 이게 진짜 "효과")
-    'delta_v_change',     # 양수 = ΔV 증가 (나빠짐), 음수 = ΔV 감소 (좋아짐)
-    'mt_max_change',      # MOSFET 최고 온도 변화
-    'bt_max_change',      # 배터리 최고 온도 변화
-    'data_source',        # 'real' or 'sim'
-]
-
-logger_state = {
-    'file': None,
-    'writer': None,
-    'tick': 0,
-    'start_time': None,
-    'prev_pdv': None,
-    'prev_mt_max': None,
-    'prev_bt_max': None,
-}
-
-def init_logger():
-    """로그 폴더/파일 생성"""
-    if not LOGGING_ENABLED:
-        return
-    os.makedirs(LOG_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"{LOG_DIR}/{LOG_FILE_PREFIX}_{timestamp}.csv"
-    logger_state['file'] = open(filename, 'w', newline='', encoding='utf-8')
-    logger_state['writer'] = csv.writer(logger_state['file'])
-    logger_state['writer'].writerow(LOG_HEADER)
-    logger_state['file'].flush()
-    logger_state['start_time'] = time.time()
-    print(f"[LOG] 로깅 시작 → {filename}")
-
-def log_tick(state, mode, p_dac, dac_vals, pwm_duty, is_real):
-    """매 tick 데이터 1줄 기록"""
-    if not LOGGING_ENABLED or logger_state['writer'] is None:
-        return
-    
-    pdv = max(state['v']) - min(state['v'])
-    mt_max = max(state['mosfet_t'])
-    bt_max = max(state['battery_t'])
-    
-    # 이전 tick과 비교 (결과 지표)
-    dv_change = (pdv - logger_state['prev_pdv']) if logger_state['prev_pdv'] is not None else 0
-    mt_change = (mt_max - logger_state['prev_mt_max']) if logger_state['prev_mt_max'] is not None else 0
-    bt_change = (bt_max - logger_state['prev_bt_max']) if logger_state['prev_bt_max'] is not None else 0
-    
-    row = [
-        datetime.now().isoformat(),
-        logger_state['tick'],
-        # 입력
-        round(state['v'][0], 4), round(state['v'][1], 4), round(state['v'][2], 4), round(state['v'][3], 4),
-        round(state['mosfet_t'][0], 2), round(state['mosfet_t'][1], 2), round(state['mosfet_t'][2], 2), round(state['mosfet_t'][3], 2),
-        round(state['battery_t'][0], 2), round(state['battery_t'][1], 2), round(state['battery_t'][2], 2), round(state['battery_t'][3], 2),
-        round(pdv, 4),
-        # AI 출력
-        mode, round(p_dac, 3),
-        dac_vals[0], dac_vals[1], dac_vals[2], dac_vals[3],
-        pwm_duty[0], pwm_duty[1], pwm_duty[2], pwm_duty[3],
-        # 결과 변화
-        round(dv_change, 4),
-        round(mt_change, 2),
-        round(bt_change, 2),
-        'real' if is_real else 'sim',
-    ]
-    logger_state['writer'].writerow(row)
-    
-    # 매 10 tick마다 flush (저장 보장)
-    if logger_state['tick'] % 10 == 0:
-        logger_state['file'].flush()
-    
-    logger_state['tick'] += 1
-    logger_state['prev_pdv'] = pdv
-    logger_state['prev_mt_max'] = mt_max
-    logger_state['prev_bt_max'] = bt_max
-    
-    # 24시간마다 새 파일 (rotation)
-    if logger_state['start_time'] and (time.time() - logger_state['start_time']) > LOG_ROTATE_HOURS * 3600:
-        logger_state['file'].close()
-        init_logger()
-
-def close_logger():
-    """프로그램 종료 시 호출"""
-    if logger_state['file']:
-        logger_state['file'].close()
-        print(f"[LOG] 로깅 종료, 총 {logger_state['tick']}개 tick 저장")
-
-@app.get("/")
-async def get_index():
-    # 대전류 전용 페이지 (없으면 일반 index.html fallback)
-    if os.path.exists("index_highcurrent.html"):
-        return FileResponse("index_highcurrent.html")
-    if not os.path.exists("index.html"):
-        return {"error": "index.html or index_highcurrent.html not found"}
-    return FileResponse("index.html")
-
-@app.get("/api/physics_constants")
-async def get_physics_constants():
-    """발표용 - 사용된 물리 상수 공개 (검증 가능성 입증)"""
-    c = PhysicsConstants()
-    return {
-        "scale_factor": hc_sim.SCALE,
-        "cell": {
-            "internal_resistance_ohm": c.R_CELL_INTERNAL,
-            "thermal_capacity_J_per_C": c.C_CELL_THERMAL,
-            "thermal_resistance_C_per_W": c.R_THETA_CELL,
-        },
-        "mosfet_IRLZ44N": {
-            "R_DS_ON_ohm": c.R_DS_ON,
-            "V_DS_sat_V": c.V_DS_SAT,
-            "thermal_resistance_no_heatsink_C_per_W": c.R_THETA_MOSFET,
-            "junction_T_max_C": c.T_J_MAX,
-        },
-        "safety_thresholds": {
-            "T_mosfet_derate_C": c.T_MOSFET_DERATE,
-            "T_mosfet_stop_C": c.T_MOSFET_STOP,
-            "T_cell_stop_C": c.T_CELL_STOP,
-        },
-        "source": "데이터시트(IRLZ44N) + 산업 표준(18650 NMC)",
-    }
-
-# ============================================================
 # AI 판단
 # ============================================================
 def ai_decide_mode(max_mosfet_t, max_battery_t, pack_delta_v):
@@ -642,55 +479,7 @@ async def websocket_endpoint(websocket: WebSocket):
     asyncio.create_task(listen_commands())
     pwm_phase = True
     prev_mode = "PWM"
-    
-    # [1번 대응] 로거 초기화 (서버 시작 시 1회)
-    if logger_state['file'] is None:
-        init_logger()
 
-    try:
-        prev_real_mode = is_real_mode
-
-        #실제 모드 데이터 수신 받아올 코드
-        while True:
-
-            #모드 토클 시 시뮬레이션 재동기화
-            if is_real_mode != prev_real_mode:
-                print(f"[INFO] 데이터 소스 전환: {'SIM->REAL' if is_real_mode else 'REAL->SIM'}")
-                if is_real_mode:
-                    # 실제 모드 진입 시 UART 연결 시도
-                    uart_connect()
-                prev_real_mode = is_real_mode
-
-            if is_real_mode:
-                # ----------------------------------------------------------
-                # ESP32에서 센서 데이터 수신 (UART)
-                # ----------------------------------------------------------
-                # 받는 데이터 형식 (ESP32에서 1초마다 보내는 JSON 한 줄):
-                #   {"v":[4.20,4.10,4.05,3.90], "mt":[30.5,...], "bt":[29.8,...], "i":[0.05,...]}
-                #
-                # v  = 셀 전압 4개 (ADS1115)
-                # mt = MOSFET 온도 4개 (NTC 서미스터)
-                # bt = 배터리 온도 4개 (DS18B20)
-                # i  = 셀 밸런싱 전류 4개 (Rsense)
-                received = uart_read_sensor()
-                if received is not None:
-                    # 데이터 도착 -> sim_state 덮어쓰기
-                    try:
-                        if "v" in received and len(received["v"]) == 4:
-                            sim_state["v"] = [float(x) for x in received["v"]]
-                        if "mt" in received and len(received["mt"]) == 4:
-                            sim_state["mosfet_t"] = [float(x) for x in received["mt"]]
-                        if "bt" in received and len(received["bt"]) == 4:
-                            sim_state["battery_t"] = [float(x) for x in received["bt"]]
-                        if "i" in received and len(received["i"]) == 4:
-                            sim_state["i"] = [float(x) for x in received["i"]]
-                    except (ValueError, TypeError, KeyError) as e:
-                        print(f"[UART] 데이터 형식 오류 (무시): {e}")
-                # 데이터 없으면 이전 sim_state 그대로 유지 (1초 주기에서 자연스러움)
-
-            cells_v = sim_state["v"]
-            cells_mt = sim_state["mosfet_t"]
-            cells_bt = sim_state["battery_t"]
 
             # ============================================================
             # [HILS 핵심] 실측 → 가상 대전류 환경 변환
@@ -724,97 +513,6 @@ async def websocket_endpoint(websocket: WebSocket):
             mode, p_dac = ai_decide_mode(max_mt_virtual, max_bt_virtual, pack_dv_virtual)
             dac_vals, pwm_duty = ai_decide_cell_outputs(mode, v_mt, v_ct, cells_v_virtual)
 
-            # ============================================================
-            # [HILS 안전 출력] AI 출력은 ÷SCALE 해서 실제 회로엔 소전류로
-            # ============================================================
-            # AI는 "50A 흘려야 한다"고 결정했어도, 실제 회로엔 0.5A만 흐름
-            # 모드/듀티 비율은 그대로 유지, 절대 전류만 스케일 다운
-            dac_vals_safe = [int(d) for d in dac_vals]   # PWM 듀티는 비율이라 그대로
-            pwm_duty_safe = [int(p) for p in pwm_duty]
-            # DAC 값은 그대로 ESP32에 전달 (실제 회로의 R_BAL 10Ω 때문에 자동으로 작은 전류만 흐름)
-
-            sim_state["dac_vals"] = dac_vals_safe
-            sim_state["pwm_duty"] = pwm_duty_safe
-            
-            # 발표용 - 가상 환경 데이터를 sim_state에 보관
-            sim_state["virtual_current_A"] = cells_i_virtual
-            sim_state["virtual_voltage_V"] = cells_v_virtual
-            sim_state["virtual_mosfet_T_C"] = v_mt
-            sim_state["virtual_cell_T_C"] = v_ct
-            sim_state["virtual_power_loss_W"] = v_p_loss
-
-                       
-            # ----------------------------------------------------------
-            # [실제 모드] AI 출력을 ESP32로 전송 (UART)
-            # ----------------------------------------------------------
-            if is_real_mode:
-                uart_send_command(mode, dac_vals_safe, pwm_duty_safe)
-
-            #모드 전환 시 시뮬레이션 재동기화
-            if mode != prev_mode:
-                sim_state["pwm_mosfet_t"] = list(cells_mt)
-                sim_state["dac_mosfet_t"] = list(cells_mt)
-                sim_state["pwm_battery_t"] = list(cells_bt)
-                sim_state["dac_battery_t"] = list(cells_bt)
-                sim_state["pwm_v"] = list(cells_v)
-                sim_state["dac_v"] = list(cells_v)
-            prev_mode = mode
-
-            pwm_phase = not pwm_phase
-            cell_currents = [0.0] * 4
-            cell_dt_mosfet = [0.0] * 4
-            cell_dt_battery = [0.0] * 4
-
-            for i in range(4):
-                if mode == "STOP":
-                    cell_currents[i] = 0.0
-                elif mode == "PWM":
-                    duty_ratio = pwm_duty[i] / 255.0
-                    avg_current = duty_ratio * 0.5
-                    if random.random() < duty_ratio:
-                        cell_currents[i] = 0.5
-                    else:
-                        cell_currents[i] = 0.0
-                    cell_dt_mosfet[i] = avg_current * HEAT_PWM_MOSFET + random.uniform(-0.02, 0.02)
-                    cell_dt_battery[i] = (cells_mt[i] - cells_bt[i]) * HEAT_BATTERY_CONDUCT + avg_current * HEAT_BATTERY_INTERNAL
-                else: 
-                    target_i = (dac_vals[i] / 4095.0) * 0.4
-                    cell_currents[i] = target_i
-                    #미세 전류 구간에서(1A 미만) 선형 제어 발열은 전류랑에 거의 정비례하므로 제곱 안 함
-                    cell_dt_mosfet[i] = target_i * HEAT_DAC_MOSFET + random.uniform(-0.03, 0.03)
-                    cell_dt_battery[i] = (cells_mt[i] - cells_bt[i]) * HEAT_BATTERY_CONDUCT + target_i * HEAT_BATTERY_INTERNAL
-
-            sim_state["i"] = cell_currents
-
-            for i in range(4):
-                cells_mt[i] += cell_dt_mosfet[i]
-                cells_mt[i] -= COOL_K_MOSFET * (cells_mt[i] - TEMP_AMBIENT)
-                cells_mt[i] = max(TEMP_AMBIENT, cells_mt[i])
-
-                cells_bt[i] += cell_dt_battery[i]
-                cells_bt[i] -= COOL_K_BATTERY * (cells_bt[i] - TEMP_AMBIENT)
-                cells_bt[i] = max(TEMP_AMBIENT, cells_bt[i])
-            
-            # [4번 수정] PCB 열 결합 — MOSFET들이 PCB 통해 서로 영향
-            # 한 셀이 풀파워면 옆 셀도 살짝 따뜻해짐 (현실)
-            cells_mt = apply_pcb_heat_coupling(cells_mt)
-            # 배터리는 물리적으로 떨어져 있어 열 결합 거의 없음 (그대로)
-
-            # 실제 모드일 때는 위에서 받은 데이터로 sim_state 이미 갱신됨 -> 시뮬 계산 스킵
-            # 시뮬 모드일 때만 발열/평탄화 시뮬 적용
-            if not is_real_mode:
-                if mode == "PWM":
-                    cells_v_new = balance_toward_min(cells_v, cell_currents, smoothness=1.0)
-                elif mode == "DAC":
-                    cells_v_new = balance_toward_min(cells_v, cell_currents, smoothness=0.5)
-                else: 
-                    # [5번] STOP 모드 자가방전 — 단조 감소 (랜덤 아님)
-                    cells_v_new = [v - SELF_DISCHARGE_RATES[i] for i, v in enumerate(cells_v)]
-
-                sim_state["v"] = [max(3.0, min(4.25, v)) for v in cells_v_new]
-                sim_state["mosfet_t"] = cells_mt
-                sim_state["battery_t"] = cells_bt
-            # 실제 모드: sim_state는 ESP32 데이터 그대로 사용 (덮어쓰기 안 함)
 
             # ============================================================
             # 6. 가상 우주
@@ -923,16 +621,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "derating_factor": round(hc_sim.derating_factor(max_mt_virtual), 3),
                     "total_power_loss_W": round(sum(v_p_loss), 2),
                 },
-                
-                # 실제 측정 (안전한 소전류)
-                "real": {
-                    "v":         add_display_noise(sim_state["v"], is_pwm=(mode=="PWM")),
-                    "i":         [round(c, 3) for c in cells_i_real],
-                    "mosfet_t":  [round(t, 2) for t in cells_mt],
-                    "battery_t": [round(t, 2) for t in cells_bt],
-                    "dac_vals":  list(dac_vals_safe),
-                    "pwm_duty":  list(pwm_duty_safe),
-                },
+               
                 
                 # ============================================================
                 # [HILS 핵심] 가상 대전류 환경 (Plant Model 출력)
@@ -963,14 +652,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
             await websocket.send_text(json.dumps(payload))
             
-            # [1번 대응] 매 tick 데이터 로깅
-            log_tick(sim_state, mode, p_dac, dac_vals_safe, pwm_duty_safe, is_real_mode)
             
             await asyncio.sleep(1.0)
 
-    except Exception as e:
-        print(f"[ERROR] 웹소켓: {e}")
-        close_logger()
 
 if __name__ == "__main__":
     import uvicorn
