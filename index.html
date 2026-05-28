@@ -352,6 +352,8 @@
         ws.onmessage = function(event) {
             const data = JSON.parse(event.data);
             const now = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+            document.getElementById('ai_high_mode').innerText = 
+            `대전류 AI: ${data.high.ai_mode} (P_DAC ${(data.high.p_dac*100).toFixed(0)}%)`;
 
             updateAIBoard(data.ai_mode, data.p_dac);
             updateSysInfo(data);
