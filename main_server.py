@@ -1,17 +1,4 @@
-"""
-A²-BMS 메인 서버 - 방안 B (소전류 + 가상 대전류 통합)
-==================================================
-[방안 B 변경사항]
-1. AI 모델 6개 로드 (소전류 3 + 대전류 3)
-2. 가상 PWM-only / DAC-only 시뮬 제거
-3. 가상 대전류 시뮬 추가 (×20 스케일링, 데이터시트 물리식)
-4. 환경별 적응형 AI: 소전류 AI는 실측에, 대전류 AI는 가상 환경에 적용
-5. 웹 대시보드: 12 그래프 → 8 그래프 (실측 4 + 가상 대전류 4)
 
-[데이터 흐름]
-실측 (0.5A) → 소전류 AI → 모드/출력 결정 → ESP32
-실측 (0.5A) → 물리식 ×20 → 가상 10A 환경 → 대전류 AI → 가상 모드/출력
-"""
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
 import asyncio
@@ -671,8 +658,14 @@ async def websocket_endpoint(websocket: WebSocket):
             # → 실제 회로엔 인가 안 함 (가상 시뮬만)
             # ============================================================
             # 1) 현재 실측 전류를 스케일 (가상 대전류)
-            i_real_for_scale = sim_state["i"]
-            i_virtual = hc_sim.scale_current(i_real_for_scale)
+            # 평균 전류로 가상 스케일 (PWM 펄스 튐 방지)
+            if mode == "PWM":
+                i_avg = [(pwm_duty[i] / 255.0) * 0.5 for i in range(4)]
+            elif mode == "DAC":
+                i_avg = [(dac_vals[i] / 4095.0) * 0.4 for i in range(4)]
+            else:
+                i_avg = [0.0, 0.0, 0.0, 0.0]
+            i_virtual = hc_sim.scale_current(i_avg)
             
             # 2) 가상 셀 전압 (IR drop 적용 - 옴의 법칙)
             v_virtual = hc_sim.virtual_cell_voltage(cells_v, i_virtual)
