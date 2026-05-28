@@ -77,7 +77,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 dac_v.append(real_v[i])
                 
                 # [10A 대전류 PWM]: 전류가 큰 만큼 스위칭 시 발생하는 전압 요동을 ±0.15V로 극대화
-                high_noise = random.uniform(-0.15, 0.15)
+                high_noise = random.uniform(-0.25, 0.25)
                 # I_virtual = 10A, R_cell = 0.022옴 가정 시 전압 강하 (V = IR)
                 v_drop = 10.0 * 0.022 
                 high_v.append(real_v[i] - v_drop + high_noise)
