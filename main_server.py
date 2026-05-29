@@ -4,6 +4,8 @@ import random
 import math
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+import os
 
 app = FastAPI()
 
@@ -31,6 +33,12 @@ try:
 except Exception as e:
     ai_loaded = False
     print(f"[WARNING] AI 모델 로딩 실패 (Rule-base 가동): {e}")
+
+@app.get("/")
+async def get_index():
+    if os.path.exists("index.html"):
+        return FileResponse("index.html")
+    return {"error": "index.html not found"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
