@@ -1,6 +1,5 @@
 fastapi
-uvicorn
-websockets
+uvicorn[standard]
 pandas
 scikit-learn
 joblib
