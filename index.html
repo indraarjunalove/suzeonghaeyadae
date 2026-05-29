@@ -294,11 +294,10 @@
                 updateDashboardWithData(mockData);
             }, 1000);
         }
+        const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
 
-        // ======== 여기서부터가 진짜 수정된 부분입니다 ========
-        // 로컬(127.0.0.1) 호스트 연동 다 빼고, 렌더 서버로 고정 연결합니다.
-        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(protocol + "//" + location.host + "/ws");
+        // 2. 알아낸 프로토콜과 현재 접속 중인 주소를 합쳐서 완벽하게 웹소켓 연결
+        const ws = new WebSocket(protocol + window.location.host + "/ws");
 
         ws.onopen = () => {
             document.getElementById('status').innerText = "시스템 정상";
