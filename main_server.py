@@ -674,20 +674,42 @@ async def websocket_endpoint(websocket: WebSocket):
             #    sim_state["i"]는 PWM 모드일 때 펄스(0↔0.5A)라 그래프가 튐
             #    → AI 명령값(dac_vals/pwm_duty)에서 평균 전류 역산해서 사용
             if mode == "PWM":
-                i_avg = [(pwm_duty[i] / 255.0) * 0.5 for i in range(4)]
+                # PWM 펄스 시뮬: 듀티비 확률로 ON/OFF
+                # 발열 계산용 평균 (i_avg_for_heat)과 그래프 표시용 펄스값(i_for_display) 분리
+                i_avg_for_heat = [(pwm_duty[i] / 255.0) * 0.5 for i in range(4)]
+                i_for_display = []
+                for i in range(4):
+                    duty_ratio = pwm_duty[i] / 255.0
+                    # 듀티비 확률로 ON/OFF 결정 (펄스 시뮬레이션)
+                    if random.random() < duty_ratio:
+                        pulse_val = 0.5 + random.uniform(-0.03, 0.03)  # ON + 노이즈
+                    else:
+                        pulse_val = 0.0 + random.uniform(0, 0.02)       # OFF + 작은 노이즈
+                i_for_display.append(pulse_val)
+    
+                # 발열은 평균 기준 (실제 RMS에 가까움)
+                i_virtual_for_heat = hc_sim.scale_current(i_avg_for_heat)
+                # 표시는 펄스 기준
+                i_virtual = hc_sim.scale_current(i_for_display)
             elif mode == "DAC":
                 i_avg = [(dac_vals[i] / 4095.0) * 0.4 for i in range(4)]
+                # DAC는 부드러운 노이즈만 (작은 ±)
+                i_avg = [v + random.uniform(-0.005, 0.005) for v in i_avg]
+                i_virtual = hc_sim.scale_current(i_avg)
+                i_virtual_for_heat = i_virtual
             else:
                 i_avg = [0.0, 0.0, 0.0, 0.0]
-            i_virtual = hc_sim.scale_current(i_avg)
+                i_virtual = hc_sim.scale_current(i_avg)
+                i_virtual_for_heat = i_virtual
             
             # 2) 가상 셀 전압 (IR drop 적용 - 옴의 법칙)
             v_virtual = hc_sim.virtual_cell_voltage(cells_v, i_virtual)
             
             # 3) 이전 모드로 가상 환경 온도 갱신 (물리식)
             prev_mode_high = sim_state.get("ai_mode_high", "DAC")
+            # 발열은 평균값으로 (실제 PWM의 평균 발열 = RMS 발열)
             v_mt_high, v_bt_high, _ = hc_sim.update_virtual_temperatures(
-                i_virtual, prev_mode_high, dt=1.0
+                i_virtual_for_heat, prev_mode_high, dt=1.0
             )
             
             # 4) 대전류 AI 판단 (가상 상태 입력)
