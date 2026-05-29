@@ -21,13 +21,15 @@ app.add_middleware(
 is_real_mode = False 
 
 # AI 모델 로딩부 (에러 방어 로직 적용)
-# (경로에 .pkl 파일이 없어도 서버가 죽지 않고 Rule-base로 돌아가도록 방어막을 쳤습니다)
+# low high ai model 불러오는 거 하나하나 다 수정해야됨~~
 try:
     import joblib
-    # 실제로는 아래 주석을 풀고 모델을 로드하면 됩니다.
-    # bms_mode_ai = joblib.load('bms_mode_ai.pkl')
-    # bms_pwm_ai = joblib.load('bms_pwm_ai.pkl')
-    # bms_dac_ai = joblib.load('bms_dac_ai.pkl')
+    bms_mode_ai = joblib.load('bms_mode_ai_low.pkl')
+    bms_pwm_ai = joblib.load('bms_pwm_ai.pkl')
+    bms_dac_ai = joblib.load('bms_dac_ai.pkl')
+    bms_mode_ai = joblib.load('bms_mode_ai.pkl')
+    bms_pwm_ai = joblib.load('bms_pwm_ai.pkl')
+    bms_dac_ai = joblib.load('bms_dac_ai.pkl')
     ai_loaded = True
     print("[INFO] AI 모델 로딩 성공")
 except Exception as e:
