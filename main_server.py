@@ -685,9 +685,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     # → 1초 단위 샘플링이라 실제 5kHz 펄스를 직접 못 그리므로,
                     #   듀티비 확률로 ON(0.5A)/OFF(0A)를 뽑아 펄스 특성을 시각화
                     if random.random() < duty_ratio:
-                        pulse_val = 0.5 + random.uniform(-0.03, 0.03)  # ON 상태 + 스위칭 노이즈
+                        pulse_val = 0.5 + random.uniform(-0.01, 0.01)  # ON 상태 + 스위칭 노이즈
                     else:
-                        pulse_val = 0.0 + random.uniform(0, 0.02)      # OFF 상태 + 미세 노이즈
+                        pulse_val = 0.0     # OFF 상태 + 미세 노이즈
                     i_for_display.append(pulse_val)  # ★ 루프 안에서 4셀 모두 append
 
                 # 발열 계산은 평균 전류 기준 (실제 PWM의 RMS 발열에 근사)
@@ -713,7 +713,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # PWM 모드면 대전류 스위칭으로 인한 전압 리플 추가 (현실적 노이즈)
             # DAC 모드는 선형 제어라 리플 거의 없음 → 노이즈 미세하게만
             if mode_high_prev_for_noise == "PWM":
-                v_virtual = [v + random.uniform(-0.04, 0.04) for v in v_virtual]
+                v_virtual = [v + random.uniform(-0.015, 0.015) for v in v_virtual]
             else:
                 v_virtual = [v + random.uniform(-0.005, 0.005) for v in v_virtual]
             
