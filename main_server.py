@@ -670,61 +670,60 @@ async def websocket_endpoint(websocket: WebSocket):
             # [방안 B - 가상 대전류 AI] 데이터시트 물리식 ×20 스케일 환경
             # → 실제 회로엔 인가 안 함 (가상 시뮬만)
             # ============================================================
-            # 1) 가상 전류 계산 — 직전 tick의 "대전류 AI" 모드/출력 기준
-            #    (주의: mode_high는 아래에서 계산되므로 직전 tick 값을 사용)
-            #    실측 모드(mode)가 아니라 대전류 모드를 따라야 STOP 시 전류 0이 됨
-            prev_mode_high = sim_state.get("ai_mode_high", "DAC")
-            prev_pwm_high = sim_state.get("pwm_duty_high", [0, 0, 0, 0])
-            prev_dac_high = sim_state.get("dac_vals_high", [0, 0, 0, 0])
-
-            if prev_mode_high == "PWM":
-                # PWM 펄스 시뮬: 대전류 듀티비 확률로 ON/OFF
-                # 발열 계산용 평균(i_avg_for_heat)과 그래프 표시용 펄스값(i_for_display) 분리
-                i_avg_for_heat = [(prev_pwm_high[i] / 255.0) * 0.5 for i in range(4)]
+            # 1) 평균 전류로 가상 스케일 (PWM 펄스 튐 방지)
+            #    sim_state["i"]는 PWM 모드일 때 펄스(0↔0.5A)라 그래프가 튐
+            #    → AI 명령값(dac_vals/pwm_duty)에서 평균 전류 역산해서 사용
+            if mode == "PWM":
+                # PWM 펄스 시뮬: 듀티비 확률로 ON/OFF
+                # 발열 계산용 평균 (i_avg_for_heat)과 그래프 표시용 펄스값(i_for_display) 분리
+                i_avg_for_heat = [(pwm_duty[i] / 255.0) * 0.5 for i in range(4)]
                 # 셀별 펄스값 생성 (4셀 각각)
                 i_for_display = []
                 for i in range(4):
-                    duty_ratio = prev_pwm_high[i] / 255.0
+                    duty_ratio = pwm_duty[i] / 255.0
                     # 듀티비를 확률로 사용해 매 tick ON/OFF 결정 (PWM 펄스 시뮬레이션)
                     # → 1초 단위 샘플링이라 실제 5kHz 펄스를 직접 못 그리므로,
                     #   듀티비 확률로 ON(0.5A)/OFF(0A)를 뽑아 펄스 특성을 시각화
                     if random.random() < duty_ratio:
-                        pulse_val = 0.5 + random.uniform(-0.03, 0.03)  # ON 상태 + 스위칭 노이즈
+                        pulse_val = 0.5 + random.uniform(-0.01, 0.01)  # ON 상태 + 스위칭 노이즈
                     else:
-                        pulse_val = 0.0 + random.uniform(0, 0.02)      # OFF 상태 + 미세 노이즈
-                    i_for_display.append(pulse_val)  # 루프 안에서 4셀 모두 append
+                        pulse_val = 0.0     # OFF 상태 + 미세 노이즈
+                    i_for_display.append(pulse_val)  # ★ 루프 안에서 4셀 모두 append
 
                 # 발열 계산은 평균 전류 기준 (실제 PWM의 RMS 발열에 근사)
                 i_virtual_for_heat = hc_sim.scale_current(i_avg_for_heat)
                 # 그래프 표시는 펄스 전류 기준 (PWM 특유의 출렁임 표현)
                 i_virtual = hc_sim.scale_current(i_for_display)
-            elif prev_mode_high == "DAC":
-                # DAC 선형 제어: 대전류 DAC값 비례 전류 (펄스 없음)
-                i_avg = [(prev_dac_high[i] / 4095.0) * 0.4 for i in range(4)]
-                i_avg = [v + random.uniform(-0.005, 0.005) for v in i_avg]  # 부드러운 미세 노이즈
+            elif mode == "DAC":
+                i_avg = [(dac_vals[i] / 4095.0) * 0.4 for i in range(4)]
+                # DAC는 부드러운 노이즈만 (작은 ±)
+                i_avg = [v + random.uniform(-0.005, 0.005) for v in i_avg]
                 i_virtual = hc_sim.scale_current(i_avg)
                 i_virtual_for_heat = i_virtual
             else:
-                # STOP: 가상 전류 완전 0 (전류 안 흐름)
-                i_virtual = [0.0, 0.0, 0.0, 0.0]
-                i_virtual_for_heat = [0.0, 0.0, 0.0, 0.0]
+                i_avg = [0.0, 0.0, 0.0, 0.0]
+                i_virtual = hc_sim.scale_current(i_avg)
+                i_virtual_for_heat = i_virtual
+            
+            # 가상 전압 노이즈 판단용: 직전 tick의 대전류 모드 참조
+            mode_high_prev_for_noise = sim_state.get("ai_mode_high", "DAC")
 
             # 2) 가상 셀 전압 (IR drop 적용 - 옴의 법칙: V = V_OCV - I×R_cell)
-            #    펄스 전류(i_virtual) 대신 평균 전류(i_virtual_for_heat)로 IR drop 계산
-            #    → 전압이 계단식으로 튀는 것 방지 (셀은 커패시터처럼 전압이 급변 안 함)
             v_virtual = hc_sim.virtual_cell_voltage(cells_v, i_virtual_for_heat)
-            # 모드별 전압 노이즈: PWM은 스위칭 리플, DAC는 미세, STOP은 없음
-            if prev_mode_high == "PWM":
-                v_virtual = [v + random.uniform(-0.01, 0.01) for v in v_virtual]
-            elif prev_mode_high == "DAC":
-                v_virtual = [v + random.uniform(-0.003, 0.003) for v in v_virtual]
-            # STOP이면 노이즈 없이 그대로 (전류 0 → IR drop 0)
-
-            # 3) 가상 환경 온도 갱신 (물리식, 평균 전류 기준 = RMS 발열)
+            # PWM 모드면 대전류 스위칭으로 인한 전압 리플 추가 (현실적 노이즈)
+            # DAC 모드는 선형 제어라 리플 거의 없음 → 노이즈 미세하게만
+            if mode_high_prev_for_noise == "PWM":
+                v_virtual = [v + random.uniform(-0.015, 0.015) for v in v_virtual]
+            else:
+                v_virtual = [v + random.uniform(-0.005, 0.005) for v in v_virtual]
+            
+            # 3) 이전 모드로 가상 환경 온도 갱신 (물리식)
+            prev_mode_high = sim_state.get("ai_mode_high", "DAC")
+            # 발열은 평균값으로 (실제 PWM의 평균 발열 = RMS 발열)
             v_mt_high, v_bt_high, _ = hc_sim.update_virtual_temperatures(
                 i_virtual_for_heat, prev_mode_high, dt=1.0
             )
-
+            
             # 4) 대전류 AI 판단 (가상 상태 입력)
             pack_dv_high = max(v_virtual) - min(v_virtual)
             mode_high, p_dac_high = ai_decide_mode(
