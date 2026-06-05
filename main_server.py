@@ -709,7 +709,7 @@ async def websocket_endpoint(websocket: WebSocket):
             mode_high_prev_for_noise = sim_state.get("ai_mode_high", "DAC")
 
             # 2) 가상 셀 전압 (IR drop 적용 - 옴의 법칙: V = V_OCV - I×R_cell)
-            v_virtual = hc_sim.virtual_cell_voltage(cells_v, i_virtual)
+            v_virtual = hc_sim.virtual_cell_voltage(cells_v, i_virtual_for_heat)
             # PWM 모드면 대전류 스위칭으로 인한 전압 리플 추가 (현실적 노이즈)
             # DAC 모드는 선형 제어라 리플 거의 없음 → 노이즈 미세하게만
             if mode_high_prev_for_noise == "PWM":
