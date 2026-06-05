@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>A²-BMS Dashboard</title>
+
+    <!--
+        Chart.js 라이브러리 (실시간 그래프 렌더링용)
+        - 버전 고정(@4.4.0)으로 CDN의 latest 버전이 깨질 경우를 방지
+        - umd.min.js : 브라우저에서 바로 쓸 수 있는 압축 빌드
+    -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <style>
+        /* ===== 전체 레이아웃 (라이트 테마) ===== */
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background-color: #ffffff; color: #1a1a1a; text-align: center; margin: 0; padding: 10px; }
+        h2 { margin-bottom: 5px; color: #1a1a1a; }
+
+        /* ===== 상단 제어 패널 (상태 + 토글 + AI 정보) ===== */
+        .control-panel { display: flex; justify-content: center; align-items: center; gap: 15px; margin-bottom: 12px; flex-wrap: wrap; }
+
+        #status { font-size: 14px; font-weight: bold; }
+
+        /* 실제/시뮬 모드 전환 버튼 */
+        #toggleBtn { background-color: #ffaa00; color: #000; border: none; padding: 10px 18px; font-size: 14px; font-weight: bold;
+            border-radius: 5px; cursor: pointer; transition: 0.3s; }
+        #toggleBtn:hover { background-color: #ffcc00; transform: scale(1.05); }
+
+        /* AI 판단 결과 표시 박스 (소전류 + 대전류) */
+        #aiStatus {
+            background-color: #f0f0f0; border: 2px solid #b0b0b0; padding: 10px 18px;
+            font-size: 14px; font-weight: bold; border-radius: 5px; min-width: 280px;
+            transition: all 0.3s ease; text-align: left; color: #1a1a1a;
+        }
+        #aiStatus .ai-mode { font-size: 18px; }
+        #aiStatus .ai-meta { font-size: 12px; color: #555; margin-top: 4px; font-weight: normal; }
+        /* 대전류 AI 모드는 주황색으로 강조 */
+        #ai_high_mode { color: #e65100 !important; font-weight: bold !important; font-size: 13px !important; margin-top: 5px !important; }
+
+        /* 셀별 AI 출력값 (DAC값 또는 PWM 듀티) - 실측 + 가상 */
+        #cellOutputs, #cellOutputsHigh {
+            background-color: #f0f0f0; border: 1px solid #b0b0b0; padding: 8px 14px;
+            border-radius: 5px;
+            display: flex; gap: 12px; font-size: 12px; color: #1a1a1a; align-items: center;
+        }
+        /* 가상 출력창은 주황 테두리로 구분 */
+        #cellOutputsHigh { border-color: #e65100; }
+        /* "실측"/"가상" 라벨 */
+        .cell-out-label { font-weight: bold; font-size: 12px; color: #00a080; padding-right: 4px; }
+        .cell-out-label.high { color: #e65100; }
+        .cell-out { padding: 4px 8px; border-left: 3px solid #b0b0b0; }
+        .cell-out .cell-label { color: #666; font-size: 10px; }
+        .cell-out .cell-val { font-weight: bold; font-size: 14px; }
+        /* 셀별 색상 구분 */
+        .cell-out.c1 { border-color: #d63b5e; }
+        .cell-out.c2 { border-color: #2680c2; }
+        .cell-out.c3 { border-color: #a040d8; }
+        .cell-out.c4 { border-color: #c8a020; }
+
+        /* ===== 그래프 대시보드 (4열 그리드) ===== */
+        .dashboard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; width: 98%; max-width: 1900px; margin: 0 auto; }
+
+        /* 개별 그래프 컨테이너 */
+        .chart-container { background-color: #f0f0f0; border-radius: 8px; padding: 10px; height: 230px; display: flex; flex-direction: column; border: 1px solid #d0d0d0; }
+        .chart-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; border-bottom: 1px solid #c0c0c0; padding-bottom: 6px; }
+        .chart-title-box { text-align: left; }
+        .chart-title { font-size: 14px; font-weight: bold; color: #1a1a1a; white-space: nowrap; }
+        .chart-desc { font-size: 11px; color: #555; font-weight: normal; display: block; margin-top: 2px;}
+
+        /* 그래프 우측 상단 실시간 수치 표시 */
+        .live-values { display: flex; gap: 8px; font-size: 12px; background: #ffffff; padding: 4px 8px; border-radius: 4px; border: 1px solid #c0c0c0; font-family: monospace;}
+        .val-c1 { color: #d63b5e; font-weight: bold; }
+        .val-c2 { color: #2680c2; font-weight: bold; }
+        .val-c3 { color: #a040d8; font-weight: bold; }
+        .val-c4 { color: #c8a020; font-weight: bold; }
+
+        /* 캔버스 래퍼 (그래프 크기 고정) */
+        .canvas-wrapper { flex-grow: 1; position: relative; }
+        canvas { width: 100% !important; height: 100% !important; position: absolute; top: 0; left: 0; }
+
+        /* STOP 모드일 때 AI 박스 빨갛게 깜빡임 (위험 경고) */
+        @keyframes pulse-danger {
+            0%, 100% { background-color: #ffd6d6; }
+            50% { background-color: #ffb0b0; }
+        }
+        #aiStatus.mode-stop {
+            animation: pulse-danger 1s infinite;
+            border-color: #d62020 !important;
+            color: #a01010 !important;
+        }
+
+        /* 그래프 상단 색 띠: 실측(초록) / 가상 대전류(주황) 구분 */
+        .row-real { border-top: 3px solid #00a080; }
+        .row-high { border-top: 3px solid #e65100; }
+    </style>
+</head>
+<body>
+
+    <h2>A²-BMS 실시간 대시보드</h2>
+
+    <!-- ===== 상단 제어 패널 ===== -->
+    <div class="control-panel">
+        <div id="status">연결 대기 중...</div>
+        <button id="toggleBtn" onclick="toggleDataMode()">실제 / 시뮬 토글</button>
+
+        <!-- AI 판단 결과: 소전류 모드 / P_DAC 확률 / 대전류 모드 -->
+        <div id="aiStatus">
+            <div class="ai-mode" id="ai_mode_text">소전류 AI: --</div>
+            <div class="ai-meta" id="ai_p_dac">P_DAC: --</div>
+            <div class="ai-meta" id="ai_high_mode">대전류 AI: --</div>
+        </div>
+
+        <!-- 셀별 AI 출력값 표시 (실측 소전류) -->
+        <div id="cellOutputs">
+            <div class="cell-out-label">실측</div>
+            <div class="cell-out c1"><div class="cell-label">C1</div><div class="cell-val" id="cell1_out">--</div></div>
+            <div class="cell-out c2"><div class="cell-label">C2</div><div class="cell-val" id="cell2_out">--</div></div>
+            <div class="cell-out c3"><div class="cell-label">C3</div><div class="cell-val" id="cell3_out">--</div></div>
+            <div class="cell-out c4"><div class="cell-label">C4</div><div class="cell-val" id="cell4_out">--</div></div>
+        </div>
+
+        <!-- 셀별 AI 출력값 표시 (가상 대전류) -->
+        <div id="cellOutputsHigh">
+            <div class="cell-out-label high">가상</div>
+            <div class="cell-out c1"><div class="cell-label">C1</div><div class="cell-val" id="cell1_out_high">--</div></div>
+            <div class="cell-out c2"><div class="cell-label">C2</div><div class="cell-val" id="cell2_out_high">--</div></div>
+            <div class="cell-out c3"><div class="cell-label">C3</div><div class="cell-val" id="cell3_out_high">--</div></div>
+            <div class="cell-out c4"><div class="cell-label">C4</div><div class="cell-val" id="cell4_out_high">--</div></div>
+        </div>
+    </div>
+
+    <!-- ===== 그래프 대시보드 (8개: 실측 4 + 가상 대전류 4) ===== -->
+    <div class="dashboard">
+        <!-- ===== 1행: 실측 (소전류 환경, 안전 범위) ===== -->
+        <div class="chart-container row-real">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <div class="chart-title">[실측] 셀 전압</div>
+                    <span class="chart-desc">소전류 환경 (0.5A)</span>
+                </div>
+                <div class="live-values" id="val_real_v">
+                    <span class="val-c1">--</span> <span class="val-c2">--</span> <span class="val-c3">--</span> <span class="val-c4">--</span>
+                </div>
+            </div>
+            <div class="canvas-wrapper"><canvas id="real_v"></canvas></div>
+        </div>
+        <div class="chart-container row-real">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <div class="chart-title">[실측] 셀 전류</div>
+                    <span class="chart-desc">밸런싱 전류</span>
+                </div>
+                <div class="live-values" id="val_real_i">
+                    <span class="val-c1">--</span> <span class="val-c2">--</span> <span class="val-c3">--</span> <span class="val-c4">--</span>
+                </div>
+            </div>
+            <div class="canvas-wrapper"><canvas id="real_i"></canvas></div>
+        </div>
+        <div class="chart-container row-real">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <div class="chart-title">[실측] 모스펫 온도</div>
+                    <span class="chart-desc">NTC 측정</span>
+                </div>
+                <div class="live-values" id="val_real_mt">
+                    <span class="val-c1">--</span> <span class="val-c2">--</span> <span class="val-c3">--</span> <span class="val-c4">--</span>
+                </div>
+            </div>
+            <div class="canvas-wrapper"><canvas id="real_mt"></canvas></div>
+        </div>
+        <div class="chart-container row-real">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <div class="chart-title">[실측] 배터리 온도</div>
+                    <span class="chart-desc">DS18B20 측정</span>
+                </div>
+                <div class="live-values" id="val_real_bt">
+                    <span class="val-c1">--</span> <span class="val-c2">--</span> <span class="val-c3">--</span> <span class="val-c4">--</span>
+                </div>
+            </div>
+            <div class="canvas-wrapper"><canvas id="real_bt"></canvas></div>
+        </div>
+
+        <!-- ===== 2행: 가상 대전류 (×20 스케일, 데이터시트 물리식) ===== -->
+        <div class="chart-container row-high">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <div class="chart-title">[가상 대전류] 전압</div>
+                    <span class="chart-desc">×20 스케일 IR drop</span>
+                </div>
+                <div class="live-values" id="val_high_v">
+                    <span class="val-c1">--</span> <span class="val-c2">--</span> <span class="val-c3">--</span> <span class="val-c4">--</span>
+                </div>
+            </div>
+            <div class="canvas-wrapper"><canvas id="high_v"></canvas></div>
+        </div>
+        <div class="chart-container row-high">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <div class="chart-title">[가상 대전류] 전류</div>
+                    <span class="chart-desc">실측 ×20 = 가상 10A급</span>
+                </div>
+                <div class="live-values" id="val_high_i">
+                    <span class="val-c1">--</span> <span class="val-c2">--</span> <span class="val-c3">--</span> <span class="val-c4">--</span>
+                </div>
+            </div>
+            <div class="canvas-wrapper"><canvas id="high_i"></canvas></div>
+        </div>
+        <div class="chart-container row-high">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <div class="chart-title">[가상 대전류] 모스펫 온도</div>
+                    <span class="chart-desc">데이터시트 물리 모델</span>
+                </div>
+                <div class="live-values" id="val_high_mt">
+                    <span class="val-c1">--</span> <span class="val-c2">--</span> <span class="val-c3">--</span> <span class="val-c4">--</span>
+                </div>
+            </div>
+            <div class="canvas-wrapper"><canvas id="high_mt"></canvas></div>
+        </div>
+        <div class="chart-container row-high">
+            <div class="chart-header">
+                <div class="chart-title-box">
+                    <div class="chart-title">[가상 대전류] 배터리 온도</div>
+                    <span class="chart-desc">I²R 줄 발열</span>
+                </div>
+                <div class="live-values" id="val_high_bt">
+                    <span class="val-c1">--</span> <span class="val-c2">--</span> <span class="val-c3">--</span> <span class="val-c4">--</span>
+                </div>
+            </div>
+            <div class="canvas-wrapper"><canvas id="high_bt"></canvas></div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================================
+        // 전역 설정
+        // ============================================================
+        const MAX_DATA_POINTS = 18;   // 그래프에 표시할 최대 데이터 포인트 수 (18초치)
+        // 셀별 고정 색상 (4개 셀 구분용) - 라이트 배경에서 잘 보이는 진한 톤
+        const CELL_COLORS = ['#d63b5e', '#2680c2', '#a040d8', '#c8a020'];
+
+        // ============================================================
+        // 차트 생성 함수
+        //   canvasId  : <canvas> 요소 id
+        //   yMin, yMax: Y축 범위
+        //   isMulti   : true면 4셀 각각 선 그림 / false면 단일 선
+        //   dangerLine: 위험 임계 온도 (점선으로 표시), null이면 미표시
+        // ============================================================
+        function createChart(canvasId, yMin, yMax, isMulti=false, dangerLine=null) {
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            const datasets = [];
+
+            if (isMulti) {
+                // 셀 4개 각각 데이터셋 생성
+                for (let i = 0; i < 4; i++) {
+                    datasets.push({
+                        label: `Cell${i+1}`,
+                        borderColor: CELL_COLORS[i],
+                        backgroundColor: CELL_COLORS[i],
+                        data: [],
+                        borderWidth: 2,
+                        pointRadius: 0,        // 평소 점(원) 숨김
+                        pointHoverRadius: 0,   // 마우스 올려도 점 안 생김 (1초마다 원 뜨던 문제 해결)
+                        fill: false,
+                        tension: 0.2           // 선을 약간 부드럽게
+                    });
+                }
+            } else {
+                // 단일 선 그래프
+                datasets.push({
+                    label: 'Value',
+                    borderColor: '#2680c2',
+                    backgroundColor: '#2680c2',
+                    data: [],
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    fill: false,
+                    tension: 0.2
+                });
+            }
+
+            // 위험 임계선 (빨간 점선) - 온도 그래프에만 추가
+            if (dangerLine !== null) {
+                datasets.push({
+                    label: `위험 (${dangerLine}°C)`,
+                    borderColor: '#d62020',
+                    borderDash: [5, 5],    // 점선 패턴
+                    borderWidth: 1,
+                    data: [],
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    fill: false,
+                    tension: 0
+                });
+            }
+
+            return new Chart(ctx, {
+                type: 'line',
+                data: { labels: [], datasets: datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,   // 실시간 갱신이라 애니메이션 끔 (성능)
+                    scales: {
+                        y: { min: yMin, max: yMax, grid: { color: '#d0d0d0' }, ticks: { color: '#555', font: { size: 9 } } },
+                        x: { grid: { color: '#d0d0d0' }, ticks: { display: false } }  // X축 시간 라벨 숨김
+                    },
+                    plugins: {
+                        legend: { display: false },  // 범례 숨김 (공간 절약)
+                        tooltip: { enabled: false }  // 툴팁 끔
+                    },
+                    // 모든 점(원) 전역 비활성화 - 1초마다 원 뜨던 문제 완전 차단
+                    elements: {
+                        point: { radius: 0, hoverRadius: 0 }
+                    }
+                }
+            });
+        }
+
+        // ============================================================
+        // 차트 8개 생성
+        //   real_* : 실측 (소전류)  /  high_* : 가상 대전류
+        // ============================================================
+        const charts = {
+            // 1행: 실측
+            real_v:  createChart('real_v', 3.3, 4.3, true),          // 전압 3.3~4.3V
+            real_i:  createChart('real_i', -0.05, 0.55, true),       // 전류 0~0.5A
+            real_mt: createChart('real_mt', 25, 75, true, 65),       // MOSFET 온도, 위험선 65°C
+            real_bt: createChart('real_bt', 25, 60, true, 55),       // 배터리 온도, 위험선 55°C
+            // 2행: 가상 대전류
+            high_v:  createChart('high_v', 3.3, 4.3, true),          // 가상 전압
+            high_i:  createChart('high_i', -1, 12, true),            // 가상 전류 0~10A급
+            high_mt: createChart('high_mt', 25, 210, true, 100),     // 가상 MOSFET 온도, 위험선 100°C
+            high_bt: createChart('high_bt', 25, 70, true, 60)        // 가상 배터리 온도, 위험선 60°C
+        };
+
+        // ============================================================
+        // AI 판단 결과 박스 갱신 (소전류 모드 + P_DAC 확률)
+        // ============================================================
+        function updateAIBoard(mode, p_dac) {
+            const board = document.getElementById('aiStatus');
+            const modeText = document.getElementById('ai_mode_text');
+            const pDacText = document.getElementById('ai_p_dac');
+
+            modeText.innerText = `소전류 AI: ${mode}`;
+            pDacText.innerText = `P_DAC: ${(p_dac * 100).toFixed(0)}%`;
+
+            // STOP 모드면 빨간 깜빡임, 아니면 PWM=빨강/DAC=파랑 테두리
+            board.classList.remove('mode-stop');
+            if (mode === "STOP") {
+                board.classList.add('mode-stop');
+            } else {
+                const isPWM = mode === "PWM";
+                board.style.borderColor = isPWM ? "#d62020" : "#2060d0";
+                board.style.color = isPWM ? "#d62020" : "#2060d0";
+            }
+        }
+
+        // ============================================================
+        // 시스템 정보 갱신 (모드/ΔV/최소전압/AI상태)
+        // ============================================================
+        // 셀별 AI 출력값 갱신 (DAC값 또는 PWM 듀티)
+        //   실측(소전류)과 가상(대전류) 둘 다 갱신
+        // ============================================================
+        function updateCellOutputs(data) {
+            // --- 실측 (소전류) ---
+            const mode = data.ai_mode;
+            for (let i = 0; i < 4; i++) {
+                const el = document.getElementById(`cell${i+1}_out`);
+                if (!el) continue;
+                if (mode === "DAC") el.innerText = `DAC: ${data.real.dac_vals[i]}`;
+                else if (mode === "PWM") el.innerText = `Duty: ${data.real.pwm_duty[i]}`;
+                else el.innerText = "STOP";
+            }
+
+            // --- 가상 (대전류) ---
+            if (!data.high) return;
+            const modeHigh = data.high.ai_mode;
+            const dacHigh = data.high.dac_vals || [0, 0, 0, 0];
+            const pwmHigh = data.high.pwm_duty || [0, 0, 0, 0];
+            for (let i = 0; i < 4; i++) {
+                const el = document.getElementById(`cell${i+1}_out_high`);
+                if (!el) continue;
+                if (modeHigh === "DAC") el.innerText = `DAC: ${dacHigh[i]}`;
+                else if (modeHigh === "PWM") el.innerText = `Duty: ${pwmHigh[i]}`;
+                else el.innerText = "STOP";
+            }
+        }
+
+        // ============================================================
+        // 그래프 우측 상단 실시간 수치 갱신
+        //   id       : live-values 요소 id
+        //   vals     : 셀 4개 값 배열
+        //   decimals : 소수점 자리수
+        //   unit     : 단위 문자열
+        // ============================================================
+        function updateLiveValues(id, vals, decimals, unit) {
+            const el = document.getElementById(id);
+            if (!el || !vals) return;
+            const spans = el.querySelectorAll('span');
+            for (let i = 0; i < 4; i++) {
+                if (spans[i] && vals[i] !== undefined) {
+                    spans[i].innerText = vals[i].toFixed(decimals) + unit;
+                }
+            }
+        }
+
+        // ============================================================
+        // 메인 갱신 함수 - 서버에서 받은 data로 모든 UI 갱신
+        // ============================================================
+        function updateDashboardWithData(data) {
+            try {
+                // 현재 시각 (X축 라벨용)
+                const now = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+
+                // --- 상단 정보 갱신 ---
+                updateAIBoard(data.ai_mode, data.p_dac);
+
+                // 대전류 AI 모드 표시 (별도 모델의 판단 결과)
+                const highEl = document.getElementById('ai_high_mode');
+                if (highEl && data.high) {
+                    highEl.innerText = `대전류 AI: ${data.high.ai_mode} (P_DAC ${(data.high.p_dac*100).toFixed(0)}%)`;
+                }
+
+                // 셀별 출력값 (없으면 0으로 방어)
+                if (!data.real.dac_vals) data.real.dac_vals = [0, 0, 0, 0];
+                if (!data.real.pwm_duty) data.real.pwm_duty = [0, 0, 0, 0];
+                updateCellOutputs(data);
+
+                // --- 실시간 수치 갱신 (실측) ---
+                updateLiveValues('val_real_v', data.real.v, 3, 'V');
+                updateLiveValues('val_real_i', data.real.i, 2, 'A');
+                updateLiveValues('val_real_mt', data.real.mosfet_t, 1, '°C');
+                updateLiveValues('val_real_bt', data.real.battery_t, 1, '°C');
+
+                // --- 실시간 수치 갱신 (가상 대전류) ---
+                if (data.high) {
+                    updateLiveValues('val_high_v', data.high.v, 3, 'V');
+                    updateLiveValues('val_high_i', data.high.i, 1, 'A');
+                    updateLiveValues('val_high_mt', data.high.mosfet_t, 1, '°C');
+                    updateLiveValues('val_high_bt', data.high.battery_t, 1, '°C');
+                }
+
+                // ----------------------------------------------------
+                // 차트에 새 데이터 추가하는 내부 함수
+                //   chart    : 대상 차트
+                //   val      : 값 (배열 또는 단일)
+                //   isMulti  : 4셀 멀티라인 여부
+                //   dangerVal: 위험 임계선 값 (있으면 마지막 데이터셋에 push)
+                // ----------------------------------------------------
+                function update(chart, val, isMulti=false, dangerVal=null) {
+                    if (!chart || !val) return;
+                    chart.data.labels.push(now);
+
+                    if (isMulti && Array.isArray(val)) {
+                        // 셀 4개 각각 해당 데이터셋에 push
+                        val.forEach((v, i) => {
+                            if (chart.data.datasets[i]) chart.data.datasets[i].data.push(v);
+                        });
+                    } else {
+                        chart.data.datasets[0].data.push(val);
+                    }
+
+                    // 위험 임계선 값 추가 (항상 일정한 수평선)
+                    if (dangerVal !== null) {
+                        const lastIdx = chart.data.datasets.length - 1;
+                        chart.data.datasets[lastIdx].data.push(dangerVal);
+                    }
+
+                    // 최대 포인트 초과 시 가장 오래된 데이터 제거 (슬라이딩 윈도우)
+                    if (chart.data.labels.length > MAX_DATA_POINTS) {
+                        chart.data.labels.shift();
+                        chart.data.datasets.forEach(d => d.data.shift());
+                    }
+
+                    chart.update('none');  // 'none' = 애니메이션 없이 즉시 갱신
+                }
+
+                // --- 실측 그래프 4개 갱신 ---
+                update(charts.real_v, data.real.v, true);
+                update(charts.real_i, data.real.i, true);
+                update(charts.real_mt, data.real.mosfet_t, true, 65);   // 위험선 65°C
+                update(charts.real_bt, data.real.battery_t, true, 55);  // 위험선 55°C
+
+                // --- 가상 대전류 그래프 4개 갱신 ---
+                if (data.high) {
+                    update(charts.high_v, data.high.v, true);
+                    update(charts.high_i, data.high.i, true);
+                    update(charts.high_mt, data.high.mosfet_t, true, 100);  // 위험선 100°C
+                    update(charts.high_bt, data.high.battery_t, true, 60);  // 위험선 60°C
+                }
+            } catch (error) {
+                console.error("[렌더링 에러]:", error);
+            }
+        }
+
+        // ============================================================
+        // WebSocket 연결
+        //   - https로 접속하면 wss://, http면 ws:// 자동 선택
+        //     (Render 같은 HTTPS 서버에서 mixed-content 차단 방지)
+        // ============================================================
+        const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
+        const ws = new WebSocket(protocol + window.location.host + "/ws");
+
+        // 연결 성공
+        ws.onopen = () => {
+            document.getElementById('status').innerText = "시스템 정상";
+            document.getElementById('status').style.color = "#00a080";
+        };
+        // 연결 종료
+        ws.onclose = () => {
+            document.getElementById('status').innerText = "연결 끊김";
+            document.getElementById('status').style.color = "#d62020";
+        };
+        // 에러 발생
+        ws.onerror = (e) => {
+            console.error("[WS 에러]:", e);
+        };
+        // 서버에서 데이터 수신 (매 1초)
+        ws.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                updateDashboardWithData(data);
+            } catch (e) {
+                console.error("[메시지 파싱 에러]:", e);
+            }
+        };
+
+        // ============================================================
+        // 실제/시뮬 모드 전환 (서버로 토글 명령 전송)
+        // ============================================================
+        function toggleDataMode() {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ command: "toggle_mode" }));
+            }
+        }
+    </script>
+</body>
+</html>
