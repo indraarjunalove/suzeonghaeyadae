@@ -697,7 +697,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif mode == "DAC":
                 i_avg = [(dac_vals[i] / 4095.0) * 0.4 for i in range(4)]
                 # DAC는 부드러운 노이즈만 (작은 ±)
-                i_avg = [v + random.uniform(-0.005, 0.005) for v in i_avg]
+                i_avg = [v + random.uniform(-0.005, 0.005) if v > 0.001 else 0.0 for v in i_avg]
                 i_virtual = hc_sim.scale_current(i_avg)
                 i_virtual_for_heat = i_virtual
             else:
@@ -735,6 +735,11 @@ async def websocket_endpoint(websocket: WebSocket):
             
             # 5) sim_state에 가상 결과 저장
             sim_state["v_high"] = v_virtual
+            # 대전류 AI가 STOP 판단했으면 가상 전류 강제 0
+            if mode_high == "STOP":
+                i_virtual = [0.0, 0.0, 0.0, 0.0]
+                i_virtual_for_heat = [0.0, 0.0, 0.0, 0.0]
+                sim_state["i_high"] = [0.0, 0.0, 0.0, 0.0]
             sim_state["i_high"] = i_virtual
             sim_state["mosfet_t_high"] = v_mt_high
             sim_state["battery_t_high"] = v_bt_high
